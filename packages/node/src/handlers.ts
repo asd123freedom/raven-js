@@ -1,3 +1,4 @@
+import * as domain from 'domain';
 import { getDefaultHub } from './hub';
 
 export function defaultOnFatalError(error: Error): void {
@@ -73,5 +74,64 @@ export function makeErrorHandler(
         }
       }, timeout); // capturing could take at least sendTimeout to fail, plus an arbitrary second for how long it takes to collect surrounding source etc
     }
+  };
+}
+
+export function requestHandler(): (
+  req: any,
+  res: any,
+  next: () => void,
+) => void {
+  return function sentryRequestMiddleware(
+    req: any,
+    res: any,
+    next: () => void,
+  ): void {
+    getDefaultHub().withScope(() => {
+      getDefaultHub().configureScope(scope => {
+        // TODO: It wasn't extra before, but there's no way to set it as top-level attribute on scope now
+        scope.setExtra('req', req);
+      });
+      domain.active.add(req);
+      domain.active.add(res);
+      next();
+    });
+  };
+}
+
+export function errorHandler(): (
+  error: any,
+  req: any,
+  res: any,
+  next: (error: any) => any,
+) => void {
+  return function sentryErrorMiddleware(
+    error: any,
+    req: any,
+    res: any,
+    next: (error: any) => any,
+  ): void {
+    const status =
+      error.status ||
+      error.statusCode ||
+      error.status_code ||
+      (error.output && error.output.statusCode) ||
+      500;
+
+    // skip anything not marked as an internal server error
+    if (status < 500) {
+      return next(error);
+    }
+
+    getDefaultHub().withScope(async () => {
+      getDefaultHub().configureScope(scope => {
+        // TODO: It wasn't extra before, but there's no way to set it as top-level attribute on scope now
+        scope.setExtra('req', req);
+      });
+      // TODO: get eventId from the capture call somehow
+      const eventId = await getDefaultHub().captureException(error);
+      res.sentry = eventId;
+      next(error);
+    });
   };
 }
