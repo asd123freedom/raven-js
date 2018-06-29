@@ -1,5 +1,5 @@
 import { Integration } from '@sentry/types';
-import { Raven } from '../raven';
+import { makeErrorHandler } from '../handlers';
 
 /** Global Promise Rejection handler */
 export class OnUncaughtException implements Integration {
@@ -10,10 +10,18 @@ export class OnUncaughtException implements Integration {
   /**
    * @inheritDoc
    */
+  public constructor(
+    private readonly options: {
+      onFatalError?(firstError: Error, secondError?: Error): void;
+    } = {},
+  ) {}
+  /**
+   * @inheritDoc
+   */
   public install(): void {
     global.process.on(
       'uncaughtException',
-      Raven.uncaughtErrorHandler.bind(Raven),
+      makeErrorHandler(this.options.onFatalError),
     );
   }
 }

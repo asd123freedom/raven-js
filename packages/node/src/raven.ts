@@ -12,10 +12,7 @@ export interface RavenInternal {
   install(onFatalError?: (error: Error) => void): void;
   send: SendMethod;
   version: string;
-  // TODO: Remove once integrations are ported
-  onFatalError(error: Error): void;
   installed: boolean;
-  uncaughtErrorHandler(): void;
 }
 
 /** Casted raven instance with access to internal functions. */

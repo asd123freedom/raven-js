@@ -1,6 +1,7 @@
 import { Backend, DSN, Options, SentryError } from '@sentry/core';
-import { addBreadcrumb, captureEvent } from '@sentry/minimal';
+import { addBreadcrumb, captureEvent, captureException } from '@sentry/minimal';
 import { SentryEvent, SentryResponse } from '@sentry/types';
+import { defaultOnFatalError } from './handlers';
 import { Raven } from './raven';
 import { HTTPSTransport, HTTPTransport } from './transports';
 
@@ -60,10 +61,6 @@ export class NodeBackend implements Backend {
     // We need to leave it here for now, as we are skipping `install` call,
     // due to integrations migration
     // TODO: Remove it once we fully migrate our code
-    const { onFatalError } = this.options;
-    if (onFatalError) {
-      Raven.onFatalError = onFatalError;
-    }
     Raven.installed = true;
 
     // Hook into Raven's breadcrumb mechanism. This allows us to intercept both
