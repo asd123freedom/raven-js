@@ -10,6 +10,13 @@ export class OnUncaughtException implements Integration {
   /**
    * @inheritDoc
    */
+  public readonly handler: (error: Error) => void = makeErrorHandler(
+    // tslint:disable-next-line
+    this.options.onFatalError,
+  );
+  /**
+   * @inheritDoc
+   */
   public constructor(
     private readonly options: {
       onFatalError?(firstError: Error, secondError?: Error): void;
@@ -19,9 +26,6 @@ export class OnUncaughtException implements Integration {
    * @inheritDoc
    */
   public install(): void {
-    global.process.on(
-      'uncaughtException',
-      makeErrorHandler(this.options.onFatalError),
-    );
+    global.process.on('uncaughtException', this.handler);
   }
 }

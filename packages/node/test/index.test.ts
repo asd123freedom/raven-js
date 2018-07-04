@@ -1,5 +1,4 @@
 import * as domain from 'domain';
-import * as RavenNode from 'raven';
 
 import {
   addBreadcrumb,
@@ -88,18 +87,8 @@ describe('SentryNode', () => {
       });
       client.install();
       getDefaultHub().bindClient(client);
-
       addBreadcrumb({ message: 'test1' });
-
-      // Simulates internal capture breadcrumb from raven
-      RavenNode.captureBreadcrumb({
-        category: 'console',
-        level: 'warning',
-        message: 'testy',
-      });
-
       addBreadcrumb({ message: 'test2' });
-
       captureMessage('event');
     });
   });

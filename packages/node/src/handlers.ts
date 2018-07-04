@@ -1,11 +1,254 @@
+import { SentryEvent, Severity } from '@sentry/types';
+import { serialize } from '@sentry/utils/object';
+import { parse as parseCookie } from 'cookie';
 import * as domain from 'domain';
+import * as lsmod from 'lsmod';
+import { hostname } from 'os';
+import { parse as parseUrl } from 'url';
+import { getHubFromCarrier } from '../../../node_modules/@sentry/hub';
 import { getDefaultHub } from './hub';
 
+let moduleCache: { [key: string]: string };
+
+/**
+ * TODO
+ */
+function getModules(): { [key: string]: string } {
+  if (!moduleCache) {
+    // tslint:disable-next-line:no-unsafe-any
+    moduleCache = lsmod();
+  }
+  return moduleCache;
+}
+
+/**
+ * TODO
+ */
+function extractRequestData(req: {
+  [key: string]: any;
+}): { [key: string]: string } {
+  // headers:
+  //   node, express: req.headers
+  //   koa: req.header
+  const headers = (req.headers || req.header || {}) as {
+    host?: string;
+    cookie?: string;
+  };
+  // method:
+  //   node, express, koa: req.method
+  const method = req.method;
+  // host:
+  //   express: req.hostname in > 4 and req.host in < 4
+  //   koa: req.host
+  //   node: req.headers.host
+  const host = req.hostname || req.host || headers.host || '<no host>';
+  // protocol:
+  //   node: <n/a>
+  //   express, koa: req.protocol
+  const protocol =
+    req.protocol === 'https' ||
+    req.secure ||
+    ((req.socket || {}) as { encrypted?: boolean }).encrypted
+      ? 'https'
+      : 'http';
+  // url (including path and query string):
+  //   node, express: req.originalUrl
+  //   koa: req.url
+  const originalUrl = (req.originalUrl || req.url) as string;
+  // absolute url
+  const absoluteUrl = `${protocol}://${host}${originalUrl}`;
+  // query string:
+  //   node: req.url (raw)
+  //   express, koa: req.query
+  const query = req.query || parseUrl(originalUrl || '', true).query;
+  // cookies:
+  //   node, express, koa: req.headers.cookie
+  const cookies = parseCookie(headers.cookie || '');
+  // body data:
+  //   node, express, koa: req.body
+  let data = req.body;
+  if (method === 'GET' || method === 'HEAD') {
+    if (typeof data === 'undefined') {
+      data = '<unavailable>';
+    }
+  }
+  if (
+    data &&
+    typeof data !== 'string' &&
+    {}.toString.call(data) !== '[object String]'
+  ) {
+    // Make sure the request body is a string
+    data = serialize(data);
+  }
+
+  // request interface
+  const request: {
+    [key: string]: any;
+  } = {
+    cookies,
+    data,
+    headers,
+    method,
+    query_string: query,
+    url: absoluteUrl,
+  };
+
+  return request;
+}
+
+/**
+ * TODO
+ */
+function extractUserData(req: {
+  [key: string]: any;
+}): { [key: string]: string } {
+  const user: { [key: string]: string } = {};
+
+  ['id', 'username', 'email'].forEach(key => {
+    if ({}.hasOwnProperty.call(req.user, key)) {
+      user[key] = (req.user as { [key: string]: string })[key];
+    }
+  });
+
+  // client ip:
+  //   node: req.connection.remoteAddress
+  //   express, koa: req.ip
+  const ip =
+    req.ip ||
+    (req.connection &&
+      (req.connection as {
+        remoteAddress?: string;
+      }).remoteAddress);
+
+  if (ip) {
+    user.ip_address = ip as string;
+  }
+
+  return user;
+}
+
+/**
+ * TODO
+ */
+function parseRequest(
+  event: SentryEvent,
+  req: {
+    [key: string]: any;
+  },
+): SentryEvent {
+  const preparedEvent = {
+    ...event,
+    extra: {
+      ...event.extra,
+      node: global.process.version,
+    },
+    modules: getModules(),
+    // TODO: `platform` shouldn't be relying on `parseRequest` usage
+    // or we could just change the name and make it generic middleware
+    platform: 'node',
+    request: {
+      ...event.request,
+      ...extractRequestData(req),
+    },
+    server_name: global.process.env.SENTRY_NAME || hostname(),
+  };
+
+  if (req.user) {
+    preparedEvent.user = {
+      ...event.user,
+      ...extractUserData(req),
+    };
+  }
+
+  return preparedEvent;
+}
+
+/**
+ * TODO
+ */
+export function requestHandler(): (
+  req: Request,
+  res: Response,
+  next: () => void,
+) => void {
+  return function sentryRequestMiddleware(
+    req: Request,
+    _res: Response,
+    next: () => void,
+  ): void {
+    // TODO: Do we even need domain when we use middleware like approach? — Kamil
+    const local = domain.create();
+    const hub = getHubFromCarrier(req);
+    hub.bindClient(getDefaultHub().getClient());
+    hub.addEventProcessor(async (event: SentryEvent) =>
+      parseRequest(event, req),
+    );
+    local.on('error', next);
+    local.run(next);
+  };
+}
+
+/**
+ * TODO
+ */
+interface MiddlewareError extends Error {
+  status?: number | string;
+  statusCode?: number | string;
+  status_code?: number | string;
+  output?: {
+    statusCode?: number | string;
+  };
+}
+
+/**
+ * TODO
+ */
+function getStatusCodeFromResponse(error: MiddlewareError): number {
+  const statusCode =
+    error.status ||
+    error.statusCode ||
+    error.status_code ||
+    (error.output && error.output.statusCode);
+
+  return statusCode ? parseInt(statusCode as string, 10) : 500;
+}
+
+/**
+ * TODO
+ */
+export function errorHandler(): (
+  error: MiddlewareError,
+  req: Request,
+  res: Response,
+  next: (error: MiddlewareError) => void,
+) => void {
+  return function sentryErrorMiddleware(
+    error: MiddlewareError,
+    req: Request,
+    _res: Response,
+    next: (error: MiddlewareError) => void,
+  ): void {
+    const status = getStatusCodeFromResponse(error);
+    if (status < 500) {
+      next(error);
+      return;
+    }
+    getHubFromCarrier(req).captureException(error);
+    next(error);
+  };
+}
+
+/**
+ * TODO
+ */
 export function defaultOnFatalError(error: Error): void {
   console.error(error && error.stack ? error.stack : error);
   global.process.exit(1);
 }
 
+/**
+ * TODO
+ */
 export function makeErrorHandler(
   onFatalError: (
     firstError: Error,
@@ -27,14 +270,12 @@ export function makeErrorHandler(
       caughtFirstError = true;
 
       getDefaultHub().withScope(async () => {
-        getDefaultHub().configureScope(scope => {
-          // TODO: It wasn't extra before, but there's no way to set it as top-level attribute on scope now
-          scope.setExtra('level', 'fatal');
-        });
+        getDefaultHub().addEventProcessor(async (event: SentryEvent) => ({
+          ...event,
+          level: Severity.Fatal,
+        }));
 
-        // TODO: we need some proper response to pass to fatalError.
-        // Previously it was `error, sendErr, eventId`
-        await getDefaultHub().captureException(error);
+        getDefaultHub().captureException(error);
 
         if (!calledFatalError) {
           calledFatalError = true;
@@ -74,64 +315,5 @@ export function makeErrorHandler(
         }
       }, timeout); // capturing could take at least sendTimeout to fail, plus an arbitrary second for how long it takes to collect surrounding source etc
     }
-  };
-}
-
-export function requestHandler(): (
-  req: any,
-  res: any,
-  next: () => void,
-) => void {
-  return function sentryRequestMiddleware(
-    req: any,
-    res: any,
-    next: () => void,
-  ): void {
-    getDefaultHub().withScope(() => {
-      getDefaultHub().configureScope(scope => {
-        // TODO: It wasn't extra before, but there's no way to set it as top-level attribute on scope now
-        scope.setExtra('req', req);
-      });
-      domain.active.add(req);
-      domain.active.add(res);
-      next();
-    });
-  };
-}
-
-export function errorHandler(): (
-  error: any,
-  req: any,
-  res: any,
-  next: (error: any) => any,
-) => void {
-  return function sentryErrorMiddleware(
-    error: any,
-    req: any,
-    res: any,
-    next: (error: any) => any,
-  ): void {
-    const status =
-      error.status ||
-      error.statusCode ||
-      error.status_code ||
-      (error.output && error.output.statusCode) ||
-      500;
-
-    // skip anything not marked as an internal server error
-    if (status < 500) {
-      return next(error);
-    }
-
-    getDefaultHub().withScope(async () => {
-      getDefaultHub().configureScope(scope => {
-        // TODO: It wasn't extra before, but there's no way to set it as top-level attribute on scope now
-        scope.setExtra('req', req);
-      });
-      // TODO: get eventId from the capture call somehow
-      const eventId = await getDefaultHub().captureException(error);
-      res.sentry = eventId;
-      next(error);
-    });
   };
 }

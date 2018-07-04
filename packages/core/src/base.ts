@@ -4,6 +4,7 @@ import {
   SdkInfo,
   SentryEvent,
   SentryResponse,
+  Severity,
   Status,
 } from '@sentry/types';
 import { uuid4 } from '@sentry/utils/misc';
@@ -135,6 +136,12 @@ export abstract class BaseClient<B extends Backend, O extends Options>
    */
   public async captureMessage(message: string, scope?: Scope): Promise<void> {
     const event = await this.getBackend().eventFromMessage(message);
+    await this.addBreadcrumb({
+      category: 'sentry',
+      event_id: event.event_id,
+      level: event.level || Severity.Error,
+      message: event.message,
+    });
     await this.captureEvent(event, scope);
   }
 
@@ -275,7 +282,7 @@ export abstract class BaseClient<B extends Backend, O extends Options>
     // This should be the last thing called, since we want that
     // {@link Hub.addEventProcessor} gets the finished prepared event.
     if (scope) {
-      await scope.applyToEvent(
+      return scope.applyToEvent(
         prepared,
         Math.min(maxBreadcrumbs, MAX_BREADCRUMBS),
       );
